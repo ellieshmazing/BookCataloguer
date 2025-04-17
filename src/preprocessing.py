@@ -8,7 +8,7 @@ import matplotlib.pyplot as plt
 #Generate histogram of hues in image
 #Input: BGR image and number of bins for the histogram
 #Output: Array of frequency of hue values in image
-def hsvHistogram(imgBGR, nBins=255):
+def hsvHistogram(imgBGR, nBins=256):
     #Convert image to HSV
     imgHSV = cv.cvtColor(imgBGR, cv.COLOR_BGR2HSV)
     
@@ -19,7 +19,7 @@ def hsvHistogram(imgBGR, nBins=255):
     imgHeight, imgWidth = imgHSV.shape[:2]
     
     #Determine bin size for hue range
-    binWidth = 255 / nBins
+    binWidth = 256 / nBins
     
     #Iterate through image pixels and increment the appropriate bin
     for y in range(imgHeight):
@@ -33,7 +33,7 @@ def hsvHistogram(imgBGR, nBins=255):
 #Function to get mean of histogram values
 #Input: Histogram, pixelCount, boolean indicating whether hi or lo image
 #Output: Mean value
-def histMean(imgHist, pixelCount, hiBool, nBins=255):
+def histMean(imgHist, pixelCount, hiBool, nBins=256):
     #Initialize mean
     mean = 0
     
@@ -119,12 +119,13 @@ def recursiveOtsu(imgHist, pixelCount, mean, qOne, varSquare, thresh=1, uOne=0):
     return recursiveOtsu(imgHist, pixelCount, mean, qOnePlus, varSquarePlus, thresh+1, uOnePlus)
 
 #Apply threshold to image
-def bgr2binaryHiLo(img, thresh):
-    #Convert image to HSV
-    imgHSV = cv.cvtColor(img, cv.COLOR_BGR2HSV)
-    
+def hsv2binaryHiLo(imgHSV, thresh): 
     #Extract image size information
     imgHeight, imgWidth = imgHSV.shape[:2]
+    
+    #Initialize variables to hold pixel counts
+    countHi = 0
+    countLo = 0
     
     #Create images to hold pixels above and below threshold
     imgHSVHi = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
@@ -134,14 +135,41 @@ def bgr2binaryHiLo(img, thresh):
     for y in range(imgHeight):
         for x in range(imgWidth):
             if (imgHSV[y][x][0] > thresh):
+                countHi += 1
                 imgHSVHi[y][x] = imgHSV[y][x]
                 imgHSVLo[y][x] = [255, 255, 255]
             else:
+                countLo += 1
                 imgHSVHi[y][x] = [0, 0, 0]
                 imgHSVLo[y][x] = imgHSV[y][x]
                 
     #Return binary image
-    return imgHSVHi,imgHSVLo
+    return imgHSVHi, countHi, imgHSVLo, countLo
+
+#Function to run Otsu until threshold value converges
+def multiOtsu(inputImgHSV, previousThresh, hiBool):
+    #Apply Otsu to image
+    thresh = otsuWrapper(inputImgHSV, hiBool)
+    
+    #Get hi and lo thresholded images
+    imgHSVHi, countHi, imgHSVLo, countLo = hsv2binaryHiLo(inputImgHSV, thresh)
+    
+    plt.imsave(outPath + 'Hi' + str(thresh) + '.png', imgHSVHi)
+    plt.imsave(outPath + 'Lo' + str(thresh) + '.png', imgHSVLo)
+    
+    #Choose image for next iteration
+    if (countHi > countLo):
+        imgFinal = imgHSVHi
+        hiBool = True
+    else:
+        imgFinal = imgHSVLo
+        hiBool = False
+    
+    #Check if thresh value is the same as previous
+    if (thresh == previousThresh):
+        return imgFinal
+    else:
+        return multiOtsu(imgFinal, thresh, hiBool)
 
 #Apply pre-processing pipeline to image
 def preprocessBook(inputImg, outPath):
@@ -149,30 +177,13 @@ def preprocessBook(inputImg, outPath):
     if (not os.path.exists(outPath)):
         os.mkdir(outPath)
         
-    binThreshold = otsuWrapper(inputImg, True)
+    #Convert image to HSV color space
+    imgHSV = cv.cvtColor(inputImg, cv.COLOR_BGR2HSV)
     
-    imgHi, imgLo = bgr2binaryHiLo(inputImg, binThreshold)
+    #Apply multiple iterations of Otsu
+    imgText = multiOtsu(imgHSV, 0, True)
     
-    plt.imsave(outPath + 'Hi1.png', imgHi)
-    plt.imsave(outPath + 'Lo1.png', imgLo)
-    
-    binThreshold = otsuWrapper(imgHi, True)
-    imgHi, imgLo = bgr2binaryHiLo(imgHi, binThreshold)
-    
-    plt.imsave(outPath + 'Hi2.png', imgHi)
-    plt.imsave(outPath + 'Lo2.png', imgLo)
-    
-    binThreshold = otsuWrapper(imgHi, True)
-    imgHi, imgLo = bgr2binaryHiLo(imgHi, binThreshold)
-    
-    plt.imsave(outPath + 'Hi3.png', imgHi)
-    plt.imsave(outPath + 'Lo3.png', imgLo)
-    
-    binThreshold = otsuWrapper(imgHi, True)
-    imgHi, imgLo = bgr2binaryHiLo(imgHi, binThreshold)
-    
-    plt.imsave(outPath + 'Hi4.png', imgHi)
-    plt.imsave(outPath + 'Lo4.png', imgLo)
+    plt.imsave(outPath + 'final.png', imgText)
 
 #Get paths for input and output files
 srcDir = os.path.dirname(os.path.abspath(__file__))
