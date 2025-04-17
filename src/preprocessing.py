@@ -4,14 +4,12 @@ import cv2 as cv
 import math
 import numpy as np
 import matplotlib.pyplot as plt
+from edge import computeFeatureResponse, genAutoCorrelationMatrix, displayRangeLCS
 
 #Generate histogram of hues in image
 #Input: BGR image and number of bins for the histogram
 #Output: Array of frequency of hue values in image
-def hsvHistogram(imgBGR, nBins=256):
-    #Convert image to HSV
-    imgHSV = cv.cvtColor(imgBGR, cv.COLOR_BGR2HSV)
-    
+def hsvHistogram(imgHSV, nBins=256):
     #Declare array to hold histogram
     histHSV = np.zeros(nBins, dtype=np.uint64)
     
@@ -33,19 +31,15 @@ def hsvHistogram(imgBGR, nBins=256):
 #Function to get mean of histogram values
 #Input: Histogram, pixelCount, boolean indicating whether hi or lo image
 #Output: Mean value
-def histMean(imgHist, pixelCount, hiBool, nBins=256):
+def histMean(imgHist, pixelCount, nBins=256):
     #Initialize mean
     mean = 0
     
-    #Alter range variables depending on hiBool (exclude 0 if hi, 255 if low)
-    start = 0
-    if (hiBool):
-        start += 1
-    else:
-        nBins -= 1
+    #Alter range variables to exclude dead bin
+    nBins -= 1
     
     #Iterate through histogram and add weighted contribution of pixels in each bin
-    for x in range(start, nBins):
+    for x in range(nBins):
         mean += x * (imgHist[x] / pixelCount)
         
     #Return mean
@@ -54,7 +48,7 @@ def histMean(imgHist, pixelCount, hiBool, nBins=256):
 #Wrapper function for recursive Otsu on HSV
 #Input: Image
 #Output:
-def otsuWrapper(inputImg, hiBool):
+def otsuWrapper(inputImg):
     #Get size attributes of image
     imgHeight, imgWidth = inputImg.shape[:2]
     
@@ -63,27 +57,18 @@ def otsuWrapper(inputImg, hiBool):
     
     #Get pixel count, altered for dead bins
     pixelCount = imgHeight * imgWidth
-    if (hiBool):
-        pixelCount -= imgHist[0]
-    else:
-        pixelCount -= imgHist[255]
+    pixelCount -= imgHist[255]
     
     #Calculate image mean
-    imgMean = histMean(imgHist, pixelCount, hiBool)
+    imgMean = histMean(imgHist, pixelCount)
     
     #Calculate starting values for qOne and variation squared
-    if (hiBool):
-        qOne = imgHist[1] / pixelCount
-    else:
-        qOne = imgHist[0] / pixelCount
+    qOne = imgHist[0] / pixelCount
         
     varSquare = qOne * (1 - qOne) * pow(0 - 1, 2)
     
     #Call recursive function
-    if (hiBool):
-        return recursiveOtsu(imgHist, pixelCount, imgMean, qOne, varSquare, thresh=2)
-    else:
-        return recursiveOtsu(imgHist, pixelCount, imgMean, qOne, varSquare)
+    return recursiveOtsu(imgHist, pixelCount, imgMean, qOne, varSquare)
     
 #Recursive Otsu function
 #Input: Histogram of image values, count of pixels, mean pixel value
@@ -123,10 +108,6 @@ def hsv2binaryHiLo(imgHSV, thresh):
     #Extract image size information
     imgHeight, imgWidth = imgHSV.shape[:2]
     
-    #Initialize variables to hold pixel counts
-    countHi = 0
-    countLo = 0
-    
     #Create images to hold pixels above and below threshold
     imgHSVHi = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
     imgHSVLo = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
@@ -135,41 +116,79 @@ def hsv2binaryHiLo(imgHSV, thresh):
     for y in range(imgHeight):
         for x in range(imgWidth):
             if (imgHSV[y][x][0] > thresh):
-                countHi += 1
                 imgHSVHi[y][x] = imgHSV[y][x]
                 imgHSVLo[y][x] = [255, 255, 255]
             else:
-                countLo += 1
-                imgHSVHi[y][x] = [0, 0, 0]
+                imgHSVHi[y][x] = [255, 255, 255]
                 imgHSVLo[y][x] = imgHSV[y][x]
                 
     #Return binary image
-    return imgHSVHi, countHi, imgHSVLo, countLo
+    return imgHSVHi, imgHSVLo
+
+#Function to count number of useful edge pixels in image
+def countEdges(img, rVals):
+    #Extract image size information
+    imgHeight, imgWidth = img.shape[:2]
+    
+    #Declare variable to hold edge count
+    edgeCount = 0
+    
+    #Iterate through image and increment edge count if non-dead pixel gives strong response
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            if (img[y][x][0] != 255 and rVals[y][x] > .5):
+                edgeCount += 1
+                
+    #Return edge count
+    return edgeCount
 
 #Function to run Otsu until threshold value converges
-def multiOtsu(inputImgHSV, previousThresh, hiBool):
+def multiOtsu(inputImgHSV, previousThresh):
     #Apply Otsu to image
-    thresh = otsuWrapper(inputImgHSV, hiBool)
+    thresh = otsuWrapper(inputImgHSV)
     
     #Get hi and lo thresholded images
-    imgHSVHi, countHi, imgHSVLo, countLo = hsv2binaryHiLo(inputImgHSV, thresh)
+    imgHSVHi, imgHSVLo = hsv2binaryHiLo(inputImgHSV, thresh)
     
     plt.imsave(outPath + 'Hi' + str(thresh) + '.png', imgHSVHi)
     plt.imsave(outPath + 'Lo' + str(thresh) + '.png', imgHSVLo)
     
+    #Generate auto-correlation matrices
+    matrixHi = genAutoCorrelationMatrix(imgHSVHi, 2.5)
+    matrixLo = genAutoCorrelationMatrix(imgHSVLo, 2.5)
+
+    #Calculate feature response and save to output
+    rValsHi = computeFeatureResponse(matrixHi)
+    plt.imsave(outPath + 'EdgeHi' + str(thresh) + '.png', displayRangeLCS(rValsHi))
+    rValsLo = computeFeatureResponse(matrixLo)
+    plt.imsave(outPath + 'EdgeLo' + str(thresh) + '.png', displayRangeLCS(rValsLo))
+    
+    countHi = countEdges(imgHSVHi, rValsHi)
+    countLo = countEdges(imgHSVLo, rValsLo)
+    
     #Choose image for next iteration
     if (countHi > countLo):
         imgFinal = imgHSVHi
-        hiBool = True
+        print("hi")
     else:
         imgFinal = imgHSVLo
-        hiBool = False
+        print("lo")
     
     #Check if thresh value is the same as previous
     if (thresh == previousThresh):
         return imgFinal
     else:
-        return multiOtsu(imgFinal, thresh, hiBool)
+        return multiOtsu(imgFinal, thresh)
+    
+#Function to remove edges of extracted image
+def cropEdges(img):
+    #Extract image size attributes
+    imgHeight, imgWidth = img.shape[:2]
+    
+    #Ignore 10% of pixels on each side
+    borderX = int(imgWidth / 20)
+    borderY = int(imgHeight / 20)
+    return img[borderY:imgHeight - borderY, borderX:imgWidth - borderX]
 
 #Apply pre-processing pipeline to image
 def preprocessBook(inputImg, outPath):
@@ -177,11 +196,14 @@ def preprocessBook(inputImg, outPath):
     if (not os.path.exists(outPath)):
         os.mkdir(outPath)
         
+    #Crop image edges
+    imgCrop = cropEdges(inputImg)
+        
     #Convert image to HSV color space
-    imgHSV = cv.cvtColor(inputImg, cv.COLOR_BGR2HSV)
+    imgHSV = cv.cvtColor(imgCrop, cv.COLOR_BGR2HSV)
     
     #Apply multiple iterations of Otsu
-    imgText = multiOtsu(imgHSV, 0, True)
+    imgText = multiOtsu(imgHSV, 0)
     
     plt.imsave(outPath + 'final.png', imgText)
 
