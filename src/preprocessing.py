@@ -1,0 +1,142 @@
+import os
+import sys
+import cv2 as cv
+import math
+import numpy as np
+import matplotlib.pyplot as plt
+
+#Generate histogram of hues in image
+#Input: BGR image and number of bins for the histogram (180 by default for possible range of hue in HSV color space)
+#Output: Array of frequency of hue values in image
+def hsvHistogram(imgBGR, nBins=255):
+    #Convert image to HSV
+    imgHSV = cv.cvtColor(imgBGR, cv.COLOR_BGR2HSV)
+    
+    #Declare array to hold histogram
+    histHSV = np.zeros(nBins, dtype=np.uint64)
+    
+    #Extract image size attributes
+    imgHeight, imgWidth = imgHSV.shape[:2]
+    
+    #Determine bin size for hue range
+    binWidth = 255 / nBins
+    
+    #Iterate through image pixels and increment the appropriate bin
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            pixelBin = int(imgHSV[y][x][0] / binWidth)
+            histHSV[pixelBin] = histHSV[pixelBin] + 1
+            
+    #Return histogram
+    return histHSV
+
+#Function to get mean of histogram values
+#Input: Histogram
+#Output: Mean value
+def histMean(imgHist, pixelCount, nBins=255):
+    #Initialize mean
+    mean = 0
+    
+    #Iterate through histogram and add weighted contribution of pixels in each bin
+    for x in range(nBins):
+        mean += x * (imgHist[x] / pixelCount)
+        
+    #Return mean
+    return mean
+
+#Wrapper function for recursive Otsu on HSV
+#Input: Image
+#Output:
+def otsuWrapper(inputImg):
+    #Get pixel count of image
+    imgHeight, imgWidth = inputImg.shape[:2]
+    pixelCount = imgHeight * imgWidth
+    
+    #Generate histogram of image
+    imgHist = hsvHistogram(inputImg)
+    
+    #Calculate image mean
+    imgMean = histMean(imgHist, pixelCount)
+    
+    #Calculate starting values for qOne and variation squared
+    qOne = imgHist[0] / pixelCount
+    varSquare = qOne * (1 - qOne) * pow(0 - 1, 2)
+    
+    #Call recursive function
+    return recursiveOtsu(imgHist, pixelCount, imgMean, qOne, varSquare)
+    
+#Recursive Otsu function
+#Input: Histogram of image values, count of pixels, mean pixel value
+#Output: Threshold value for binary mask
+def recursiveOtsu(imgHist, pixelCount, mean, qOne, varSquare, thresh=1, uOne=0):
+    #Calculate next values for pOne and qOne
+    pOnePlus = imgHist[thresh] / pixelCount
+    qOnePlus = qOne + pOnePlus
+    
+    #Calculate the left class mean (with default to 0 if qOnePlus is 0 to avoid divide by zero error)
+    if (qOnePlus > 0):
+        uOnePlus = ((qOne * uOne) + (thresh * pOnePlus)) / qOnePlus
+    else:
+        uOnePlus = 0
+    
+    #Calculate the right class mean
+    uTwoPlus = (mean - (qOnePlus * uOnePlus)) / (1 - qOnePlus)
+    
+    #Calculate the between-class variance with current threshold
+    varSquarePlus = qOnePlus * (1 - qOnePlus) * pow(uOnePlus - uTwoPlus, 2)
+        
+    #If variance decreases, return previous value as it was maximum
+    #This is due to the usage of binarization, as the variance will always be an inverted polynomial. With more classes,
+    #ending execution early would not be possible
+    if (varSquarePlus < varSquare):
+        return thresh - 1
+    
+    #End execution if threshold is maximum value
+    if (thresh == 255):
+        return thresh
+        
+    #Execute for next threshold value
+    return recursiveOtsu(imgHist, pixelCount, mean, qOnePlus, varSquarePlus, thresh+1, uOnePlus)
+
+#Apply threshold to image
+def bgr2binary(img, thresh):
+    #Convert image to HSV
+    imgHSV = cv.cvtColor(img, cv.COLOR_BGR2HSV)
+    
+    #Extract image size information
+    imgHeight, imgWidth = imgHSV.shape[:2]
+    
+    #Iterate through image and modify each pixel according to threshold
+    for y in range(imgHeight):
+        for x in range(imgWidth):
+            if (imgHSV[y][x][0] > thresh):
+                imgHSV[y][x] = [255, 255, 255]
+            else:
+                imgHSV[y][x] = [0, 0, 0]
+                
+    #Return binary image
+    return imgHSV
+
+#Apply pre-processing pipeline to image
+def preprocessBook(inputImg, outPath):
+    #Make directory to save output images
+    if (not os.path.exists(outPath)):
+        os.mkdir(outPath)
+        
+    binThreshold = otsuWrapper(inputImg)
+    
+    imgBinary = bgr2binary(inputImg, binThreshold)
+    print(binThreshold)
+    
+    plt.imsave(outPath + 'Binary.png', imgBinary)
+
+#Get paths for input and output files
+srcDir = os.path.dirname(os.path.abspath(__file__))
+inPath = str(srcDir + '\\' + sys.argv[1])
+outPath = str(srcDir + '\\' + sys.argv[2])
+
+#Import input image
+inputImg = plt.imread(inPath)
+
+#Apply pre-processing to input image, then save to outPath
+preprocessBook(inputImg, outPath)
