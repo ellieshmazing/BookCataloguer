@@ -9,12 +9,12 @@ from edge import computeFeatureResponse, genAutoCorrelationMatrix, displayRangeL
 #Generate histogram of hues in image
 #Input: BGR image and number of bins for the histogram
 #Output: Array of frequency of hue values in image
-def hsvHistogram(imgHSV, nBins=256):
+def imgHistogram(img, nBins=256):
     #Declare array to hold histogram
     histHSV = np.zeros(nBins, dtype=np.uint64)
     
     #Extract image size attributes
-    imgHeight, imgWidth = imgHSV.shape[:2]
+    imgHeight, imgWidth = img.shape[:2]
     
     #Determine bin size for hue range
     binWidth = 256 / nBins
@@ -22,7 +22,7 @@ def hsvHistogram(imgHSV, nBins=256):
     #Iterate through image pixels and increment the appropriate bin
     for y in range(imgHeight):
         for x in range(imgWidth):
-            pixelBin = int(imgHSV[y][x][0] / binWidth)
+            pixelBin = int(img[y][x] / binWidth)
             histHSV[pixelBin] = histHSV[pixelBin] + 1
             
     #Return histogram
@@ -53,7 +53,7 @@ def otsuWrapper(inputImg):
     imgHeight, imgWidth = inputImg.shape[:2]
     
     #Generate histogram of image
-    imgHist = hsvHistogram(inputImg)
+    imgHist = imgHistogram(inputImg)
     
     #Get pixel count, altered for dead bins
     pixelCount = imgHeight * imgWidth
@@ -104,29 +104,35 @@ def recursiveOtsu(imgHist, pixelCount, mean, qOne, varSquare, thresh=1, uOne=0):
     return recursiveOtsu(imgHist, pixelCount, mean, qOnePlus, varSquarePlus, thresh+1, uOnePlus)
 
 #Apply threshold to image
-def hsv2binaryHiLo(imgHSV, thresh): 
+def gray2HiLo(inputImg, imgGray, thresh): 
     #Extract image size information
-    imgHeight, imgWidth = imgHSV.shape[:2]
+    imgHeight, imgWidth = inputImg.shape[:2]
     
     #Create images to hold pixels above and below threshold
-    imgHSVHi = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
-    imgHSVLo = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
+    imgHi = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
+    imgLo = np.zeros((imgHeight, imgWidth, 3), dtype=np.uint8)
+    
+    #Declare variables to count pixels
+    countLo = 0
+    countHi = 0
     
     #Iterate through image and modify each pixel according to threshold
     for y in range(imgHeight):
         for x in range(imgWidth):
-            if (imgHSV[y][x][0] > thresh):
-                imgHSVHi[y][x] = imgHSV[y][x]
-                imgHSVLo[y][x] = [255, 255, 255]
+            if (imgGray[y][x] > thresh):
+                countHi += 1
+                imgHi[y][x] = inputImg[y][x]
+                imgLo[y][x] = [255, 255, 255]
             else:
-                imgHSVHi[y][x] = [255, 255, 255]
-                imgHSVLo[y][x] = imgHSV[y][x]
+                countLo += 1
+                imgHi[y][x] = [255, 255, 255]
+                imgLo[y][x] = inputImg[y][x]
                 
     #Return binary image
-    return imgHSVHi, imgHSVLo
+    return imgHi, countHi, imgLo, countLo
 
 #Function to count number of useful edge pixels in image
-def countEdges(img, rVals):
+def countEdges(img, rVals, edgeThresh=50000):
     #Extract image size information
     imgHeight, imgWidth = img.shape[:2]
     
@@ -136,26 +142,29 @@ def countEdges(img, rVals):
     #Iterate through image and increment edge count if non-dead pixel gives strong response
     for y in range(imgHeight):
         for x in range(imgWidth):
-            if (img[y][x][0] != 255 and rVals[y][x] > .5):
+            if (img[y][x][0] != 255 and rVals[y][x] > edgeThresh):
                 edgeCount += 1
                 
     #Return edge count
     return edgeCount
 
 #Function to run Otsu until threshold value converges
-def multiOtsu(inputImgHSV, previousThresh):
+def multiOtsu(img, previousThresh):
+    #Convert image to gray
+    imgGray = cv.cvtColor(img, cv.COLOR_BGR2GRAY)
+
     #Apply Otsu to image
-    thresh = otsuWrapper(inputImgHSV)
+    thresh = otsuWrapper(imgGray)
     
     #Get hi and lo thresholded images
-    imgHSVHi, imgHSVLo = hsv2binaryHiLo(inputImgHSV, thresh)
+    imgHi, pixelCountHi, imgLo, pixelCountLo = gray2HiLo(img, imgGray, thresh)
     
-    plt.imsave(outPath + 'Hi' + str(thresh) + '.png', imgHSVHi)
-    plt.imsave(outPath + 'Lo' + str(thresh) + '.png', imgHSVLo)
+    plt.imsave(outPath + 'Hi' + str(thresh) + '.png', imgHi)
+    plt.imsave(outPath + 'Lo' + str(thresh) + '.png', imgLo)
     
     #Generate auto-correlation matrices
-    matrixHi = genAutoCorrelationMatrix(imgHSVHi, 2.5)
-    matrixLo = genAutoCorrelationMatrix(imgHSVLo, 2.5)
+    matrixHi = genAutoCorrelationMatrix(imgHi, 2.5)
+    matrixLo = genAutoCorrelationMatrix(imgLo, 2.5)
 
     #Calculate feature response and save to output
     rValsHi = computeFeatureResponse(matrixHi)
@@ -163,16 +172,24 @@ def multiOtsu(inputImgHSV, previousThresh):
     rValsLo = computeFeatureResponse(matrixLo)
     plt.imsave(outPath + 'EdgeLo' + str(thresh) + '.png', displayRangeLCS(rValsLo))
     
-    countHi = countEdges(imgHSVHi, rValsHi)
-    countLo = countEdges(imgHSVLo, rValsLo)
+    print(f'Threshold: {thresh}')
+    
+    countHi = countEdges(imgHi, rValsHi, 50000)
+    countLo = countEdges(imgLo, rValsLo, 50000)
+    print(f'Hi: {countHi} Pixel: {pixelCountHi}')
+    print(f'Lo: {countLo} Pixel: {pixelCountLo}')
     
     #Choose image for next iteration
-    if (countHi > countLo):
-        imgFinal = imgHSVHi
-        print("hi")
+    if (pixelCountHi == 0):
+        imgFinal = imgLo
+    elif (pixelCountLo == 0):
+        imgFinal = imgHi
+    elif (countHi / pixelCountHi > countLo / pixelCountLo):
+        imgFinal = imgHi
+        print("hi!!")
     else:
-        imgFinal = imgHSVLo
-        print("lo")
+        imgFinal = imgLo
+        print("lo!!")
     
     #Check if thresh value is the same as previous
     if (thresh == previousThresh):
@@ -198,16 +215,13 @@ def preprocessBook(inputImg, outPath):
         
     #Crop image edges
     imgCrop = cropEdges(inputImg)
-        
-    #Convert image to HSV color space
-    imgHSV = cv.cvtColor(imgCrop, cv.COLOR_BGR2HSV)
     
     #Apply multiple iterations of Otsu
-    imgText = multiOtsu(imgHSV, 0)
+    imgText = multiOtsu(imgCrop, 0)
     
     plt.imsave(outPath + 'final.png', imgText)
 
-#Get paths for input and output files
+'''#Get paths for input and output files
 srcDir = os.path.dirname(os.path.abspath(__file__))
 inPath = str(srcDir + '\\' + sys.argv[1])
 outPath = str(srcDir + '\\' + sys.argv[2])
@@ -216,4 +230,4 @@ outPath = str(srcDir + '\\' + sys.argv[2])
 inputImg = plt.imread(inPath)
 
 #Apply pre-processing to input image, then save to outPath
-preprocessBook(inputImg, outPath)
+preprocessBook(inputImg, outPath)'''
