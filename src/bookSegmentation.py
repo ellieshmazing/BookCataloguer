@@ -1,13 +1,52 @@
 import os
 import sys
+import time
 import cv2 as cv
 import math
 import easyocr
 import numpy as np
 import pickle as pkl
-from PIL import Image
 import matplotlib.pyplot as plt
-from preprocessing import otsuWrapper
+
+#Function to crop contents of bounding box
+def cropBook(img, bookMask):
+    #Extract image size attributes
+    imgHeight, imgWidth = img.shape[:2]
+    
+    #Convert bookMask to binary threshold
+    bookBGR = cv.cvtColor(bookMask, cv.COLOR_Lab2BGR)
+    bookGray = cv.cvtColor(bookBGR, cv.COLOR_BGR2GRAY)
+    _, thresh = cv.threshold(bookGray, 65, 255, cv.THRESH_BINARY)
+    
+    #Find single contour for book
+    contour, _ = cv.findContours(thresh, cv.RETR_EXTERNAL, 2)
+    contour = np.vstack(contour).squeeze()
+    
+    #Find rectangle to contain contour
+    rect = cv.minAreaRect(contour)
+    
+    #Get the rotation angle of the box
+    angle = rect[2]
+    
+    #Calculate the rotation matrix
+    rotMat = cv.getRotationMatrix2D((imgWidth / 2, imgHeight / 2), angle, 1)
+    
+    #Rotate the image
+    imgRot = cv.warpAffine(img, rotMat, (imgWidth, imgHeight))
+    
+    #Get the box corners
+    bbox = cv.boxPoints(rect)
+    
+    #Transform according to the rotation matrix
+    bboxRot = np.int64(cv.transform(np.array([bbox]), rotMat))[0]
+    
+    #Crop the rotated image
+    x1, y1 = np.min(bboxRot, axis=0)
+    x2, y2 = np.max(bboxRot, axis=0)
+    imgCrop = imgRot[y1:y2, x1:x2]
+    
+    #Return cropped image
+    return imgCrop
 
 #Draw OCR detections on image
 def drawDetections(img, ocrResults):
@@ -15,7 +54,7 @@ def drawDetections(img, ocrResults):
     annotatedImg = img.copy()
     
     #Iterate through results and draw box for each
-    for bbox in ocrResults:
+    for (bbox, _) in ocrResults:
         pts = np.array(bbox, dtype=np.int32)
         cv.polylines(annotatedImg, [pts], isClosed=True, color=(0,255,0))
         
@@ -60,10 +99,6 @@ def findTextRegions(inputImg):
     ocrResults.append(reader.readtext(input90))
     ocrResults.append(reader.readtext(input180))
     ocrResults.append(reader.readtext(input270))
-    
-    #Save ocrResults
-    with open(outPath + "ocrResults.pickle", "wb") as f:
-        pkl.dump(ocrResults, f)
     
     #Reorient results to same coordinate system
     ocrResults = reorientResults(ocrResults, inputImg)
@@ -388,7 +423,7 @@ def assignInitialSuperpixels(bbox, xDiff, yDiff, labelSP, thresh=0.1):
     #Iterate through all pixels in bbox and increment their SP
     for y in range(int(np.round(yHigh - yLow))):
         for x in range(int(np.round(xHigh - xLow))):
-            labelCurr = labelSP[yLow + y][xLow + x]
+            labelCurr = labelSP[int(yLow + y)][int(xLow + x)]
             
             if labelCurr in countSP:
                 countSP[labelCurr] += 1
@@ -453,7 +488,7 @@ def generateSuperpixelAdjacencyMatrix(spBoundaries, labelSP, numSP):
     for y in range(1, imgHeight - 1):
         for x in range(1, imgWidth - 1):
             #Skip iteration if not border pixel
-            if (spBoundaries[y][x][0] == 0):
+            if (spBoundaries[y][x] == 0):
                 continue
             
             #Add all adjacent SP to spAdjMatrix
@@ -467,15 +502,15 @@ def generateSuperpixelAdjacencyMatrix(spBoundaries, labelSP, numSP):
     return spAdjMatrix
     
 #Group Superpixels by the book they belong to
-def groupSuperpixels(inputImg, ocrResults, xDiff, yDiff, spBoundaries, numSP, labelSP, labelColors, colorDistThresh=10, posThresh=3.5, maxSP=1500):
-    #Initialize output array that holds four coordinates for each book
-    bookCoords = []
+def groupSuperpixels(inputImg, ocrResults, xDiff, yDiff, spBoundaries, numSP, labelSP, labelColors, colorDistThresh=10, posThresh=3.5, maxSP=1500): 
+    #Declare array to hold output images
+    bookImgs = []
     
     #Get Superpixel adjacency matrix
     spAdjMatrix = generateSuperpixelAdjacencyMatrix(spBoundaries, labelSP, numSP)
     
     #Determine Superpixels belonging to each book text detection
-    for i in range(15, len(ocrResults)):
+    for i in range(len(ocrResults)):
         #Assign initial Superpixels within detection box
         bookSP = assignInitialSuperpixels(np.array(ocrResults[i]), xDiff, yDiff, labelSP)
         print(len(bookSP))
@@ -483,13 +518,14 @@ def groupSuperpixels(inputImg, ocrResults, xDiff, yDiff, spBoundaries, numSP, la
         #Get book max and min pos
         bookPos = getBookSPPos(bookSP, labelColors)
         
-        #Check whether to add adjacent Superpixels until none are added
-        prevBookSPLen = 0
+        #Flag whether to save
+        sFlag = True
             
         #Check whether to add adjacent Superpixels
         for j in bookSP:
             #Skip execution if above max number of SPs
             if (len(bookSP) > maxSP):
+                sFlag = False
                 break
             
             for spID in range(numSP):
@@ -508,26 +544,36 @@ def groupSuperpixels(inputImg, ocrResults, xDiff, yDiff, spBoundaries, numSP, la
                 if (np.abs(labelColors[spID][4] - bookPos[0]) < (posThresh * xDist)):
                     if (np.abs(labelColors[spID][5] - bookPos[1]) < (posThresh * xDist)):
                         bookSP.append(spID)
+                        bookPos = getBookSPPos(bookSP, labelColors)
                         continue
                             
                 if (np.abs(labelColors[spID][6] - bookPos[2]) < (posThresh * yDist)):
                     if (np.abs(labelColors[spID][7] - bookPos[3]) < (posThresh * yDist)):
                         bookSP.append(spID)
+                        bookPos = getBookSPPos(bookSP, labelColors)
                     
         print(len(bookSP))
+        
+        if (not sFlag):
+            continue
             
         #Get mask of book
         bookMask = getBookMask(inputImg, bookSP, labelSP)
         
-        #Save mask
-        plt.imsave(outPath + str(i) + ".jpg", bookMask)
+        #Crop bookMask
+        bookCrop = cropBook(inputImg, bookMask)
+        if (bookCrop.size > 0):
+            plt.imsave(outPath + str(i) + ".jpg", bookCrop)
+        
+        #Append to output array
+        bookImgs.append(bookCrop)
     
-    
-    #return bookCoords
+    #Return segmented books
+    return bookImgs
     
 #Extract book spines
-def extractBooks(inputImg, outPath, sigma=2, regionSize=20):
-    '''#Make directory to save output images
+def extractBooks(inputImg, outPath, sigma=2, regionSize=1000):
+    #Make directory to save output images
     if (not os.path.exists(outPath)):
         os.mkdir(outPath)
         
@@ -538,10 +584,7 @@ def extractBooks(inputImg, outPath, sigma=2, regionSize=20):
     #Cull bad detections
     print("Culling bad/repeat detections...")
     ocrResults = cullDetections(ocrResults)
-    plt.imsave(outPath + 'Culled.jpg', drawDetections(inputImg, ocrResults))'''
-        
-    with open(outPath + "ocrCulled.pickle", "rb") as f:
-        ocrResults = pkl.load(f)
+    plt.imsave(outPath + 'Culled.jpg', drawDetectionsCropped(inputImg, ocrResults, 0, 0))
     
     #Extract shelf
     print("Isolating bookshelf...")
@@ -553,52 +596,34 @@ def extractBooks(inputImg, outPath, sigma=2, regionSize=20):
     
     #Apply Gaussian blur to image
     imgLab = cv.GaussianBlur(imgLab, (3,3), sigma)
+    plt.imsave(outPath + 'Lab.jpg', imgLab)
     
     #Generate Superpixel object from image
     print("Generating Superpixel image...")
     objSP = cv.ximgproc.createSuperpixelSLIC(imgLab, cv.ximgproc.MSLIC, regionSize)
-    
     objSP.iterate(10)
+    
+    #Generate Superpixel boundary mask
     spBoundaries = objSP.getLabelContourMask()
-    print(objSP.getNumberOfSuperpixels())
-    plt.imsave(outPath + 'Lab.jpg', imgLab)
     cv.imwrite(outPath + 'SPBound.jpg', spBoundaries)
+    
+    #Get Superpixel labels and count
     labelSP = objSP.getLabels()
     numSP = objSP.getNumberOfSuperpixels()
     
-    with open(outPath + "superpixels.pickle", "wb") as f:
-        pkl.dump(labelSP, f)
-    
-    #TO-DO: Replace 3217 with actual number variable
+    #Generate Superpixel image and determine dominant color for each
     print("Generating Superpixel visual...")
     imgSP, labelColors = visualizeSuperpixels(imgLab, labelSP, numSP)
     plt.imsave(outPath + 'SP.jpg', imgSP)
     plt.imsave(outPath + 'SPBox.jpg', drawDetectionsCropped(imgSP, ocrResults, xDiff, yDiff))
     
-    with open(outPath + "labelColors.pickle", "wb") as f:
-        pkl.dump(labelColors, f)
-        
-    #Get Superpixel boundary mask
-    spBoundaries = cv.imread(outPath + 'SPBound.jpg')
-    
     #Group Superpixels according to the book they belong to
-    bookCoords = groupSuperpixels(imgLab, ocrResults, xDiff, yDiff, spBoundaries, numSP, labelSP, labelColors)
+    print("Extracting book spines...")
+    bookImgs = groupSuperpixels(imgShelf, ocrResults, xDiff, yDiff, spBoundaries, numSP, labelSP, labelColors)
     
-    '''#Get threshold for image
-    threshold = otsuWrapper(imgLab[:,:,0])
-    
-    #Threshold image
-    ret, imgThreshold = cv.threshold(imgLab[:,:,0], threshold, 255, cv.THRESH_BINARY)
-    
-    plt.imsave(outPath + 'thresh.jpg', imgThreshold)'''
-
-#Get edges
-def getBookEdges(inputImg, outPath):
-    for i in range(0, 180, 10):
-        edges = cv.Canny(inputImg, i, 180, L2gradient=True)
-    
-        plt.imsave(outPath + "edge" + str(i) + ".png", edges)
-    
+    #Save book images
+    with open(outPath + "bookImages.pickle", "wb") as f:
+        pkl.dump(bookImgs, f)
     
 #Get paths for input and output files
 srcDir = os.path.dirname(os.path.abspath(__file__))
@@ -608,8 +633,10 @@ outPath = str(srcDir + '\\' + sys.argv[2])
 #Import input image
 inputImg = plt.imread(inPath)
 
-#Apply pre-processing to input image, then save to outPath
-extractBooks(inputImg, outPath)
-#getBookEdges(inputImg, outPath)
+startTime = time.time()
 
-#plt.imsave(outPath +'easyOCR.jpg', findTextRegions(inputImg, windowSize=50))
+#Extract all book spines in image
+extractBooks(inputImg, outPath)
+
+endTime = time.time()
+print(f'Execution time: {endTime - startTime}')
